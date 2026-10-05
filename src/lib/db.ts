@@ -20,6 +20,7 @@ function defaultSettings(): AppSettings {
     autostart: 0,
     theme: "light",
     sound_enabled: 1,
+    notifications_enabled: 1,
     start_minimized: 0,
     holidays_synced_at: null,
     show_yesterday: 1,
@@ -34,6 +35,10 @@ function defaultSettings(): AppSettings {
     repeat_on_day: 1,
     window_size: "normal",
     glass_opacity: 88,
+    skin: "auto",
+    window_x: null,
+    window_y: null,
+    hide_from_taskbar: 1,
   };
 }
 
@@ -108,6 +113,11 @@ async function migrate(db: Database) {
     `ALTER TABLE settings ADD COLUMN repeat_on_day INTEGER NOT NULL DEFAULT 1`,
     `ALTER TABLE settings ADD COLUMN window_size TEXT NOT NULL DEFAULT 'normal'`,
     `ALTER TABLE settings ADD COLUMN glass_opacity INTEGER NOT NULL DEFAULT 88`,
+    `ALTER TABLE settings ADD COLUMN notifications_enabled INTEGER NOT NULL DEFAULT 1`,
+    `ALTER TABLE settings ADD COLUMN skin TEXT NOT NULL DEFAULT 'auto'`,
+    `ALTER TABLE settings ADD COLUMN window_x INTEGER`,
+    `ALTER TABLE settings ADD COLUMN window_y INTEGER`,
+    `ALTER TABLE settings ADD COLUMN hide_from_taskbar INTEGER NOT NULL DEFAULT 1`,
     `ALTER TABLE events ADD COLUMN photo_path TEXT`,
     `ALTER TABLE events ADD COLUMN tag TEXT`,
   ];
@@ -118,20 +128,19 @@ async function migrate(db: Database) {
       /* column exists */
     }
   }
-  await db.execute(`UPDATE settings SET theme = 'light' WHERE theme = 'dark'`);
-
   const rows = await db.select<AppSettings[]>("SELECT * FROM settings WHERE id = 1");
   if (rows.length === 0) {
     const s = defaultSettings();
     await db.execute(
-      `INSERT INTO settings (id, country_code, remind_days, autostart, theme, sound_enabled, start_minimized, holidays_synced_at, show_yesterday, show_ticker, show_holidays, show_personal, always_on_top, font_size, global_hotkey, accent, sort_mode, repeat_on_day, window_size, glass_opacity)
-       VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+      `INSERT INTO settings (id, country_code, remind_days, autostart, theme, sound_enabled, notifications_enabled, start_minimized, holidays_synced_at, show_yesterday, show_ticker, show_holidays, show_personal, always_on_top, font_size, global_hotkey, accent, sort_mode, repeat_on_day, window_size, glass_opacity, skin, window_x, window_y, hide_from_taskbar)
+       VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
       [
         s.country_code,
         s.remind_days,
         s.autostart,
         s.theme,
         s.sound_enabled,
+        s.notifications_enabled,
         s.start_minimized,
         s.holidays_synced_at,
         s.show_yesterday,
@@ -146,6 +155,10 @@ async function migrate(db: Database) {
         s.repeat_on_day,
         s.window_size,
         s.glass_opacity,
+        s.skin,
+        s.window_x,
+        s.window_y,
+        s.hide_from_taskbar,
       ],
     );
   }
@@ -308,6 +321,75 @@ export async function clearNonUserHolidays(): Promise<void> {
   await db.execute(`DELETE FROM events WHERE source != 'user'`);
 }
 
+/** Быстрая пакетная вставка каталога (после clearNonUserHolidays). */
+export async function insertHolidayCatalog(
+  rows: Array<{
+    title: string;
+    month: number;
+    day: number;
+    year?: number | null;
+    external_id: string;
+    notes?: string | null;
+    source?: EventSource;
+    type?: EventType;
+  }>,
+): Promise<number> {
+  const db = await getDb();
+  const now = nowIso();
+  const events: AppEvent[] = rows.map((input) => ({
+    id: uid(),
+    title: input.title.trim(),
+    type: input.type ?? "holiday",
+    month: input.month,
+    day: input.day,
+    year: input.year ?? null,
+    notes: input.notes ?? null,
+    link: null,
+    remind_days: null,
+    sound_path: null,
+    photo_path: null,
+    tag: null,
+    source: input.source ?? "observance",
+    external_id: input.external_id,
+    hidden: 0,
+    created_at: now,
+    updated_at: now,
+  }));
+
+  if (!db) {
+    memory.events.push(...events);
+    return events.length;
+  }
+
+  // sqlx/tauri plugin: по одной INSERT, но без SELECT на каждую строку
+  for (const event of events) {
+    await db.execute(
+      `INSERT INTO events (id, title, type, month, day, year, notes, link, remind_days, sound_path, photo_path, tag, source, external_id, hidden, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+      [
+        event.id,
+        event.title,
+        event.type,
+        event.month,
+        event.day,
+        event.year,
+        event.notes,
+        event.link,
+        event.remind_days,
+        event.sound_path,
+        event.photo_path,
+        event.tag,
+        event.source,
+        event.external_id,
+        event.hidden,
+        event.created_at,
+        event.updated_at,
+      ],
+    );
+  }
+  return events.length;
+}
+
 export async function hideEvent(id: string, hidden: boolean): Promise<void> {
   await updateEvent(id, { hidden: hidden ? 1 : 0 });
 }
@@ -399,16 +481,17 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
   }
   await db.execute(
     `UPDATE settings SET country_code=$1, remind_days=$2, autostart=$3, theme=$4,
-     sound_enabled=$5, start_minimized=$6, holidays_synced_at=$7, show_yesterday=$8,
-     show_ticker=$9, show_holidays=$10, show_personal=$11, always_on_top=$12, font_size=$13,
-     global_hotkey=$14, accent=$15, sort_mode=$16, repeat_on_day=$17, window_size=$18,
-     glass_opacity=$19 WHERE id=1`,
+     sound_enabled=$5, notifications_enabled=$6, start_minimized=$7, holidays_synced_at=$8, show_yesterday=$9,
+     show_ticker=$10, show_holidays=$11, show_personal=$12, always_on_top=$13, font_size=$14,
+     global_hotkey=$15, accent=$16, sort_mode=$17, repeat_on_day=$18, window_size=$19,
+     glass_opacity=$20, skin=$21, window_x=$22, window_y=$23, hide_from_taskbar=$24 WHERE id=1`,
     [
       next.country_code,
       next.remind_days,
       next.autostart,
       next.theme,
       next.sound_enabled,
+      next.notifications_enabled ?? 1,
       next.start_minimized,
       next.holidays_synced_at,
       next.show_yesterday,
@@ -423,6 +506,10 @@ export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSe
       next.repeat_on_day ?? 1,
       next.window_size || "normal",
       next.glass_opacity ?? 88,
+      next.skin || "auto",
+      next.window_x,
+      next.window_y,
+      next.hide_from_taskbar ?? 1,
     ],
   );
   return next;

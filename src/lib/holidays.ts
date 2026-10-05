@@ -4,12 +4,12 @@ import {
   clearNonUserHolidays,
   getSettings,
   hideEvent,
+  insertHolidayCatalog,
   listEvents,
   updateSettings,
-  upsertHoliday,
 } from "./db";
 
-const CATALOG_VERSION = 4;
+const CATALOG_VERSION = 5;
 const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Только русскоязычные тематические дни — как «какой сегодня праздник» */
@@ -49,36 +49,30 @@ export async function syncHolidays(force = false): Promise<{ count: number }> {
 
   await clearNonUserHolidays();
 
-  let count = 0;
-  for (const o of OBSERVANCES) {
-    const externalId = `obs-${o.month}-${o.day}-${o.title}`;
-    await upsertHoliday({
+  const catalog = [
+    ...OBSERVANCES.map((o) => ({
       title: o.title,
       month: o.month,
       day: o.day,
-      year: null,
-      external_id: externalId,
+      year: null as number | null,
+      external_id: `obs-${o.month}-${o.day}-${o.title}`,
       notes: o.note ?? null,
-      source: "observance",
-      type: "holiday",
-    });
-    count += 1;
-  }
-
-  for (const n of NAMEDAYS) {
-    const externalId = `name-${n.month}-${n.day}-${n.name}`;
-    await upsertHoliday({
+      source: "observance" as const,
+      type: "holiday" as const,
+    })),
+    ...NAMEDAYS.map((n) => ({
       title: `Именины: ${n.name}`,
       month: n.month,
       day: n.day,
-      year: null,
-      external_id: externalId,
+      year: null as number | null,
+      external_id: `name-${n.month}-${n.day}-${n.name}`,
       notes: `День имени ${n.name}`,
-      source: "observance",
-      type: "custom",
-    });
-    count += 1;
-  }
+      source: "observance" as const,
+      type: "holiday" as const,
+    })),
+  ];
+
+  const count = await insertHolidayCatalog(catalog);
 
   if (hiddenExt.size) {
     const after = await listEvents();

@@ -19,6 +19,22 @@ export async function pickAndStorePhoto(eventId: string): Promise<string | null>
   return invoke<string>("copy_to_photos", { source: path, id: eventId });
 }
 
+/** Сбрасывает photo_path и удаляет файл из папки photos приложения. */
+export async function clearEventPhoto(
+  eventId: string,
+  photoPath: string | null | undefined,
+  update: (id: string, patch: { photo_path: null }) => Promise<unknown>,
+): Promise<void> {
+  await update(eventId, { photo_path: null });
+  if (photoPath) {
+    try {
+      await invoke("remove_photo_file", { path: photoPath });
+    } catch {
+      /* файл мог уже отсутствовать */
+    }
+  }
+}
+
 export async function pickSoundFile(): Promise<string | null> {
   const path = await open({
     multiple: false,

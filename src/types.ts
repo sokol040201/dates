@@ -28,6 +28,8 @@ export interface AppSettings {
   autostart: number;
   theme: "light" | "dark";
   sound_enabled: number;
+  /** Системные Windows-уведомления */
+  notifications_enabled: number;
   start_minimized: number;
   holidays_synced_at: string | null;
   show_yesterday: number;
@@ -49,6 +51,13 @@ export interface AppSettings {
   window_size: string;
   /** Прозрачность стекла 55–95 */
   glass_opacity: number;
+  /** Скин: auto | none | winter | spring | summer | autumn */
+  skin: string;
+  /** Сохранённая позиция окна (логические координаты) */
+  window_x: number | null;
+  window_y: number | null;
+  /** Скрыть кнопку из панели задач Windows */
+  hide_from_taskbar: number;
 }
 
 export interface UpcomingEvent {

@@ -3,12 +3,14 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listEvents, getSettings } from "./db";
 import { relativeLabel, toUpcoming } from "./dates";
 
 const NOTIFIED_KEY = "dates.notified";
 const EVENING_HOUR = 18;
+
+export type ReminderCheckMode = "startup" | "schedule";
 
 function loadNotified(): Record<string, string> {
   try {
@@ -39,8 +41,14 @@ export async function ensureNotificationPermission(): Promise<boolean> {
   }
 }
 
-export async function checkReminders(): Promise<number> {
+/**
+ * mode=startup — только события на сегодня (без «завтра» / «через N дней»).
+ * mode=schedule — полный цикл напоминаний в течение дня.
+ */
+export async function checkReminders(mode: ReminderCheckMode = "schedule"): Promise<number> {
   const settings = await getSettings();
+  if (!(settings.notifications_enabled ?? 1)) return 0;
+
   const events = await listEvents();
   const upcoming = toUpcoming(events, settings.remind_days);
   const notified = loadNotified();
@@ -58,18 +66,26 @@ export async function checkReminders(): Promise<number> {
 
     const slots: { slot: string; bodyPrefix: string }[] = [];
 
-    if (item.daysUntil === remindAt && item.daysUntil > 1) {
-      slots.push({ slot: `in-${remindAt}`, bodyPrefix: relativeLabel(item.daysUntil) });
-    }
-    if (item.daysUntil === 1) {
-      slots.push({ slot: "tomorrow", bodyPrefix: "Завтра" });
-    }
-    if (item.daysUntil === 0) {
-      // первое уведомление в день события
-      slots.push({ slot: "day", bodyPrefix: "Сегодня" });
-      // повтор вечером
-      if (settings.repeat_on_day && hour >= EVENING_HOUR) {
-        slots.push({ slot: "day-evening", bodyPrefix: "Сегодня вечером" });
+    if (mode === "startup") {
+      // При запуске — только сегодняшний день
+      if (item.daysUntil === 0) {
+        slots.push({ slot: "day", bodyPrefix: "Сегодня" });
+        if (settings.repeat_on_day && hour >= EVENING_HOUR) {
+          slots.push({ slot: "day-evening", bodyPrefix: "Сегодня вечером" });
+        }
+      }
+    } else {
+      if (item.daysUntil === remindAt && item.daysUntil > 1) {
+        slots.push({ slot: `in-${remindAt}`, bodyPrefix: relativeLabel(item.daysUntil) });
+      }
+      if (item.daysUntil === 1) {
+        slots.push({ slot: "tomorrow", bodyPrefix: "Завтра" });
+      }
+      if (item.daysUntil === 0) {
+        slots.push({ slot: "day", bodyPrefix: "Сегодня" });
+        if (settings.repeat_on_day && hour >= EVENING_HOUR) {
+          slots.push({ slot: "day-evening", bodyPrefix: "Сегодня вечером" });
+        }
       }
     }
 
@@ -87,10 +103,15 @@ export async function checkReminders(): Promise<number> {
       const body = `${bodyPrefix} · ${kind}${agePart}`;
 
       try {
-        await sendNotification({
-          title: item.event.title,
-          body,
-        });
+        try {
+          await invoke("show_app_notification", {
+            title: item.event.title,
+            body,
+          });
+        } catch {
+          // fallback, если нативный вызов недоступен
+          await sendNotification({ title: item.event.title, body });
+        }
         if (settings.sound_enabled) {
           if (item.event.sound_path) playSoundFile(item.event.sound_path);
           else playChime();
@@ -137,9 +158,9 @@ function playChime() {
 }
 
 export function startReminderLoop(intervalMs = 30 * 60 * 1000): () => void {
-  void checkReminders();
+  void checkReminders("startup");
   const id = window.setInterval(() => {
-    void checkReminders();
+    void checkReminders("schedule");
   }, intervalMs);
   return () => window.clearInterval(id);
 }

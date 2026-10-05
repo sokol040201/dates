@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { UpcomingEvent } from "../types";
 import { tagLabel } from "../types";
 import { anniversaryLabel, formatShortDate, relativeLabel } from "../lib/dates";
@@ -5,7 +6,7 @@ import { photoSrc } from "../lib/media";
 
 interface Props {
   items: UpcomingEvent[];
-  empty: string;
+  empty: ReactNode;
   personal?: boolean;
   onSelect?: (item: UpcomingEvent) => void;
 }
@@ -28,7 +29,7 @@ function ageBitLabel(age: number): string {
 
 export function EventList({ items, empty, personal, onSelect }: Props) {
   if (!items.length) {
-    return <div className="empty">{empty}</div>;
+    return <>{empty}</>;
   }
 
   return (
@@ -39,7 +40,6 @@ export function EventList({ items, empty, personal, onSelect }: Props) {
           item.daysUntil === 0 ? "today" : item.daysUntil < 0 ? "past" : "soon";
         const dateBit = formatShortDate(item.event.month, item.event.day);
         const ageLabel = personal ? anniversaryLabel(item.age) : "";
-        // Для ДР возраст читабельнее, чем «N-я годовщина»
         const ageBit =
           personal && item.event.type === "birthday" && item.age != null && item.age > 0
             ? ageBitLabel(item.age)

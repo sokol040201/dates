@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import { TitleBar } from "./components/TitleBar";
@@ -10,16 +11,24 @@ import { PeoplePanel } from "./components/PeoplePanel";
 import { DayCard } from "./components/DayCard";
 import { MonthCalendar } from "./components/MonthCalendar";
 import { GlassFrame } from "./components/GlassFrame";
-import { IconCalendar, IconList, IconSearch } from "./components/Icons";
+import { EmptyState } from "./components/EmptyState";
+import { IconCalendar, IconList, IconSearch, IconUserPlus } from "./components/Icons";
 import { getSettings, initDb, listEvents, updateSettings } from "./lib/db";
 import { isPersonalEvent, isSignificantEvent, shouldSyncHolidays, syncHolidays } from "./lib/holidays";
 import { startReminderLoop } from "./lib/reminders";
 import { toUpcoming } from "./lib/dates";
 import { matchesSearch } from "./lib/media";
 import { applyAccentTheme, DEFAULT_ACCENT } from "./lib/themes";
+import { applySkin, resolveSkin } from "./lib/skins";
 import { SORT_OPTIONS, sortUpcoming, type SortMode } from "./lib/sort";
 import { applyWindowSize } from "./lib/windowSize";
-import { checkForAppUpdate } from "./lib/updater";
+import {
+  applySkipTaskbar,
+  restoreWindowPosition,
+  startWindowPositionTracking,
+  stopWindowPositionTracking,
+} from "./lib/windowState";
+import { startAutoUpdateCheck } from "./lib/updater";
 import type { AppEvent, AppSettings, EventTag, PanelId, UpcomingEvent } from "./types";
 import { TAG_OPTIONS } from "./types";
 
@@ -31,6 +40,7 @@ const defaultSettings: AppSettings = {
   autostart: 0,
   theme: "light",
   sound_enabled: 1,
+  notifications_enabled: 1,
   start_minimized: 0,
   holidays_synced_at: null,
   show_yesterday: 1,
@@ -45,6 +55,10 @@ const defaultSettings: AppSettings = {
   repeat_on_day: 1,
   window_size: "normal",
   glass_opacity: 88,
+  skin: "auto",
+  window_x: null,
+  window_y: null,
+  hide_from_taskbar: 1,
 };
 
 function applyUiSettings(s: AppSettings) {
@@ -54,6 +68,9 @@ function applyUiSettings(s: AppSettings) {
   const opacity = Math.min(95, Math.max(55, s.glass_opacity || 88));
   document.documentElement.style.setProperty("--glass-alpha", String(opacity / 100));
   applyAccentTheme(s.accent || DEFAULT_ACCENT, s.theme);
+  applySkin(s.skin || "auto", s.theme, () => {
+    applyAccentTheme(s.accent || DEFAULT_ACCENT, s.theme);
+  });
 }
 
 async function toggleMainWindow() {
@@ -90,12 +107,13 @@ function App() {
   const [catalogFilter, setCatalogFilter] = useState<"all" | "holidays" | "namedays">("all");
   const [viewMode, setViewMode] = useState<"list" | "month">("list");
   const [selected, setSelected] = useState<UpcomingEvent | null>(null);
+  const [peopleEditId, setPeopleEditId] = useState<string | null>(null);
   const [calCursor, setCalCursor] = useState(() => {
     const n = new Date();
     return { year: n.getFullYear(), month: n.getMonth() + 1 };
   });
   const didStartMinimized = useRef(false);
-  const didApplyWindowSize = useRef(false);
+  const didApplyWindowLayout = useRef(false);
 
   const refresh = useCallback(async () => {
     const [ev, st] = await Promise.all([listEvents(), getSettings()]);
@@ -109,15 +127,23 @@ function App() {
       repeat_on_day: st.repeat_on_day ?? 1,
       window_size: st.window_size || "normal",
       glass_opacity: st.glass_opacity || 88,
+      skin: st.skin || "auto",
+      window_x: st.window_x ?? null,
+      window_y: st.window_y ?? null,
+      hide_from_taskbar: st.hide_from_taskbar ?? 1,
+      notifications_enabled: st.notifications_enabled ?? 1,
     };
     setEvents(ev);
     setSettings(normalized);
     applyUiSettings(normalized);
     try {
       await getCurrentWindow().setAlwaysOnTop(!!normalized.always_on_top);
-      if (!didApplyWindowSize.current) {
-        didApplyWindowSize.current = true;
+      await applySkipTaskbar(!!normalized.hide_from_taskbar);
+      if (!didApplyWindowLayout.current) {
+        didApplyWindowLayout.current = true;
         await applyWindowSize(normalized.window_size);
+        await restoreWindowPosition(normalized.window_x, normalized.window_y);
+        await startWindowPositionTracking();
       }
     } catch {
       /* browser */
@@ -127,6 +153,7 @@ function App() {
 
   useEffect(() => {
     let stopReminders: (() => void) | undefined;
+    let stopUpdates: (() => void) | undefined;
     let unlisten: (() => void) | undefined;
 
     (async () => {
@@ -136,7 +163,9 @@ function App() {
         if (!didStartMinimized.current && st.start_minimized) {
           didStartMinimized.current = true;
           try {
-            await getCurrentWindow().hide();
+            // Скрываем только при автозапуске Windows, не при ручном открытии
+            const viaAutostart = await invoke<boolean>("launched_via_autostart");
+            if (viaAutostart) await getCurrentWindow().hide();
           } catch {
             /* browser */
           }
@@ -151,6 +180,7 @@ function App() {
           /* ok */
         }
         stopReminders = startReminderLoop();
+        stopUpdates = startAutoUpdateCheck();
         try {
           unlisten = await listen("dates://sync-holidays", async () => {
             await syncHolidays(true);
@@ -159,8 +189,6 @@ function App() {
         } catch {
           /* not tauri */
         }
-        // Тихая проверка обновлений с GitHub Releases
-        void checkForAppUpdate({ install: true }).catch(() => undefined);
       } finally {
         setReady(true);
       }
@@ -168,7 +196,9 @@ function App() {
 
     return () => {
       stopReminders?.();
+      stopUpdates?.();
       unlisten?.();
+      stopWindowPositionTracking();
       void unregisterAll().catch(() => undefined);
     };
   }, [refresh]);
@@ -195,6 +225,7 @@ function App() {
       }
       if (mod && (e.key === "n" || e.key === "N")) {
         e.preventDefault();
+        setPeopleEditId(null);
         setPanel("people");
       }
     }
@@ -247,16 +278,61 @@ function App() {
     );
   }, [events, settings.remind_days, settings.show_yesterday, filterItem, sortMode]);
 
-  const calendarItems = useMemo(() => [...significant, ...personal], [significant, personal]);
+  // Календарь: весь месяц, без обрезки по горизонту напоминаний
+  const calendarItems = useMemo(() => {
+    const catalog = events.filter((e) => {
+      if (!isSignificantEvent(e)) return false;
+      if (catalogFilter === "namedays") return !!e.external_id?.startsWith("name-");
+      if (catalogFilter === "holidays") {
+        return (
+          !!e.external_id?.startsWith("obs-") ||
+          (e.source === "user" && e.type === "holiday")
+        );
+      }
+      return true;
+    });
+    const own = events.filter((e) => isPersonalEvent(e));
+    return toUpcoming([...catalog, ...own], 366, new Date(), false).filter(filterItem);
+  }, [events, catalogFilter, filterItem]);
+
+  const filtersActive = !!query.trim() || tagFilter !== "all";
+  const hasAnyPersonal = useMemo(
+    () => events.some((e) => !e.hidden && isPersonalEvent(e)),
+    [events],
+  );
+  const hasAnyCatalog = useMemo(
+    () => events.some((e) => !e.hidden && isSignificantEvent(e)),
+    [events],
+  );
 
   const todayEvents = useMemo(() => {
     const n = new Date();
     return events.filter((e) => !e.hidden && e.month === n.getMonth() + 1 && e.day === n.getDate());
   }, [events]);
 
+  function clearListFilters() {
+    setQuery("");
+    setTagFilter("all");
+    setCatalogFilter("all");
+  }
+
+  useEffect(() => {
+    if (!selected) return;
+    const fresh = events.find((e) => e.id === selected.event.id);
+    if (!fresh || fresh.hidden) {
+      setSelected(null);
+      return;
+    }
+    if (fresh === selected.event) return;
+    const next = toUpcoming([fresh], settings.remind_days, new Date(), !!settings.show_yesterday)[0];
+    if (next) setSelected(next);
+  }, [events, selected, settings.remind_days, settings.show_yesterday]);
+
+  const activeSkin = resolveSkin(settings.skin);
+
   if (!ready) {
     return (
-      <GlassFrame>
+      <GlassFrame skin={activeSkin}>
         <div style={{ display: "grid", placeItems: "center", height: "100%" }}>
           <span className="muted">DATES…</span>
         </div>
@@ -265,10 +341,13 @@ function App() {
   }
 
   return (
-    <GlassFrame>
+    <GlassFrame skin={activeSkin}>
       <TitleBar
         onOpenSettings={() => setPanel("settings")}
-        onOpenPeople={() => setPanel("people")}
+        onOpenPeople={() => {
+          setPeopleEditId(null);
+          setPanel("people");
+        }}
       />
 
       <div className="toolbar">
@@ -392,8 +471,42 @@ function App() {
                 <div className="scroll-area">
                   <EventList
                     items={significant}
-                    empty="Нет ближайших дат — обновите каталог в настройках"
                     onSelect={setSelected}
+                    empty={
+                      filtersActive || catalogFilter !== "all" ? (
+                        <EmptyState
+                          icon={<IconSearch size={18} />}
+                          title="Ничего не найдено"
+                          description={
+                            hasAnyCatalog ? "Другой фильтр или сбросьте поиск" : "Нет дат в горизонте"
+                          }
+                          action={{ label: "Сбросить", onClick: clearListFilters }}
+                        />
+                      ) : (
+                        <EmptyState
+                          icon={<IconCalendar size={18} />}
+                          title="Каталог пуст"
+                          description="Загрузите праздники и именины"
+                          action={{
+                            label: "Обновить",
+                            onClick: () => {
+                              void (async () => {
+                                try {
+                                  await syncHolidays(true);
+                                  await refresh();
+                                } catch {
+                                  setPanel("settings");
+                                }
+                              })();
+                            },
+                          }}
+                          secondaryAction={{
+                            label: "Настройки",
+                            onClick: () => setPanel("settings"),
+                          }}
+                        />
+                      )
+                    }
                   />
                 </div>
               </section>
@@ -406,8 +519,30 @@ function App() {
                   <EventList
                     items={personal}
                     personal
-                    empty="Добавьте дни рождения кнопкой + или импортом"
                     onSelect={setSelected}
+                    empty={
+                      filtersActive && hasAnyPersonal ? (
+                        <EmptyState
+                          icon={<IconSearch size={18} />}
+                          title="Ничего не найдено"
+                          description="Нет совпадений по поиску или тегу"
+                          action={{ label: "Сбросить", onClick: clearListFilters }}
+                        />
+                      ) : (
+                        <EmptyState
+                          icon={<IconUserPlus size={18} />}
+                          title="Нет своих событий"
+                          description="Дни рождения и важные даты"
+                          action={{
+                            label: "Добавить",
+                            onClick: () => {
+                              setPeopleEditId(null);
+                              setPanel("people");
+                            },
+                          }}
+                        />
+                      )
+                    }
                   />
                 </div>
               </section>
@@ -431,7 +566,11 @@ function App() {
       {panel === "people" && (
         <PeoplePanel
           events={events}
-          onClose={() => setPanel("main")}
+          initialEditId={peopleEditId}
+          onClose={() => {
+            setPeopleEditId(null);
+            setPanel("main");
+          }}
           onChanged={async () => {
             await refresh();
           }}
@@ -444,6 +583,11 @@ function App() {
           onClose={() => setSelected(null)}
           onChanged={async () => {
             await refresh();
+          }}
+          onEditFull={(id) => {
+            setSelected(null);
+            setPeopleEditId(id);
+            setPanel("people");
           }}
         />
       )}

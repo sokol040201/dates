@@ -1,12 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { EventTag, UpcomingEvent } from "../types";
+import type { EventTag, EventType, UpcomingEvent } from "../types";
 import { TAG_OPTIONS, tagLabel } from "../types";
 import { deleteEvent, hideEvent, updateEvent } from "../lib/db";
 import { anniversaryLabel, formatShortDate, relativeLabel } from "../lib/dates";
 import { buildGreeting, copyText, greetingTemplates } from "../lib/greetings";
-import { photoSrc, pickAndStorePhoto, pickSoundFile } from "../lib/media";
-import { IconCamera, IconClose, IconCopy, IconHide, IconLink, IconSound, IconTrash } from "./Icons";
+import { clearEventPhoto, photoSrc, pickAndStorePhoto, pickSoundFile } from "../lib/media";
+import {
+  IconCamera,
+  IconClose,
+  IconCopy,
+  IconHide,
+  IconLink,
+  IconSound,
+  IconTrash,
+} from "./Icons";
 import { Select } from "./ui";
 
 interface Props {
@@ -14,10 +22,16 @@ interface Props {
   defaultRemindDays: number;
   onClose: () => void;
   onChanged: () => Promise<void>;
+  onEditFull?: (id: string) => void;
 }
 
-export function DayCard({ item, defaultRemindDays, onClose, onChanged }: Props) {
+export function DayCard({ item, defaultRemindDays, onClose, onChanged, onEditFull }: Props) {
   const e = item.event;
+  const [title, setTitle] = useState(e.title);
+  const [day, setDay] = useState(String(e.day));
+  const [month, setMonth] = useState(String(e.month));
+  const [year, setYear] = useState(e.year != null ? String(e.year) : "");
+  const [eventType, setEventType] = useState<EventType>(e.type);
   const [notes, setNotes] = useState(e.notes ?? "");
   const [link, setLink] = useState(e.link ?? "");
   const [remind, setRemind] = useState(e.remind_days != null ? String(e.remind_days) : "");
@@ -27,8 +41,22 @@ export function DayCard({ item, defaultRemindDays, onClose, onChanged }: Props) 
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const src = photoSrc(photo);
-  const templates = greetingTemplates(e, item.age);
+  const templates = greetingTemplates({ ...e, title }, item.age);
   const canEdit = e.source === "user";
+
+  useEffect(() => {
+    setTitle(e.title);
+    setDay(String(e.day));
+    setMonth(String(e.month));
+    setYear(e.year != null ? String(e.year) : "");
+    setEventType(e.type);
+    setNotes(e.notes ?? "");
+    setLink(e.link ?? "");
+    setRemind(e.remind_days != null ? String(e.remind_days) : "");
+    setTag((e.tag as EventTag) || "");
+    setPhoto(e.photo_path);
+    setSound(e.sound_path);
+  }, [e]);
 
   async function savePatch(patch: Parameters<typeof updateEvent>[1]) {
     setBusy(true);
@@ -39,6 +67,27 @@ export function DayCard({ item, defaultRemindDays, onClose, onChanged }: Props) 
     } finally {
       setBusy(false);
     }
+  }
+
+  async function saveCore() {
+    if (!canEdit) return;
+    const d = Number(day);
+    const m = Number(month);
+    if (!title.trim() || !Number.isFinite(d) || !Number.isFinite(m) || d < 1 || d > 31 || m < 1 || m > 12) {
+      setStatus("Проверьте имя и дату");
+      return;
+    }
+    await savePatch({
+      title: title.trim(),
+      type: eventType,
+      day: d,
+      month: m,
+      year: year.trim() === "" ? null : Number(year),
+      notes: notes.trim() || null,
+      link: link.trim() || null,
+      tag: tag || null,
+      remind_days: remind.trim() === "" ? null : Math.max(0, Number(remind) || 0),
+    });
   }
 
   return (
@@ -54,7 +103,18 @@ export function DayCard({ item, defaultRemindDays, onClose, onChanged }: Props) 
         <div className="daycard-hero">
           {src ? <img className="avatar lg" src={src} alt="" /> : <div className="avatar lg placeholder" />}
           <div>
-            <div className="daycard-title">{e.title}</div>
+            {canEdit ? (
+              <input
+                className="field daycard-title-input"
+                value={title}
+                onChange={(ev) => setTitle(ev.target.value)}
+                onBlur={() => {
+                  if (title.trim() && title.trim() !== e.title) void savePatch({ title: title.trim() });
+                }}
+              />
+            ) : (
+              <div className="daycard-title">{e.title}</div>
+            )}
             <div className="muted">
               {relativeLabel(item.daysUntil)} · {formatShortDate(e.month, e.day, e.year)}
               {anniversaryLabel(item.age) ? ` · ${anniversaryLabel(item.age)}` : ""}
@@ -65,6 +125,45 @@ export function DayCard({ item, defaultRemindDays, onClose, onChanged }: Props) 
 
         {canEdit && (
           <>
+            <Select
+              label="Тип"
+              value={eventType}
+              onChange={(v) => {
+                setEventType(v);
+                void savePatch({ type: v });
+              }}
+              options={[
+                { value: "birthday", label: "День рождения" },
+                { value: "custom", label: "Своё событие" },
+                { value: "holiday", label: "Праздник" },
+              ]}
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <input
+                className="field"
+                placeholder="День"
+                inputMode="numeric"
+                value={day}
+                onChange={(ev) => setDay(ev.target.value)}
+                onBlur={() => void saveCore()}
+              />
+              <input
+                className="field"
+                placeholder="Месяц"
+                inputMode="numeric"
+                value={month}
+                onChange={(ev) => setMonth(ev.target.value)}
+                onBlur={() => void saveCore()}
+              />
+              <input
+                className="field"
+                placeholder="Год"
+                inputMode="numeric"
+                value={year}
+                onChange={(ev) => setYear(ev.target.value)}
+                onBlur={() => void saveCore()}
+              />
+            </div>
             <textarea
               className="field"
               style={{ minHeight: 56, resize: "vertical" }}
@@ -124,8 +223,29 @@ export function DayCard({ item, defaultRemindDays, onClose, onChanged }: Props) 
                   }
                 }}
               >
-                <IconCamera size={15} /> Фото
+                <IconCamera size={15} /> {photo ? "Сменить фото" : "Фото"}
               </button>
+              {photo ? (
+                <button
+                  type="button"
+                  className="btn ghost-danger"
+                  disabled={busy}
+                  title="Удалить фото"
+                  onClick={async () => {
+                    try {
+                      const prev = photo;
+                      setPhoto(null);
+                      await clearEventPhoto(e.id, prev, updateEvent);
+                      await onChanged();
+                      setStatus("Фото удалено");
+                    } catch (err) {
+                      setStatus(String(err));
+                    }
+                  }}
+                >
+                  <IconTrash size={15} /> Убрать фото
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="btn"
@@ -154,6 +274,15 @@ export function DayCard({ item, defaultRemindDays, onClose, onChanged }: Props) 
                   }}
                 >
                   Сбросить звук
+                </button>
+              )}
+              {onEditFull && (
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={() => onEditFull(e.id)}
+                >
+                  В списке
                 </button>
               )}
             </div>

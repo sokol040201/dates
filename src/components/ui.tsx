@@ -5,20 +5,26 @@ export function Switch({
   checked,
   onChange,
   label,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
-    <label className="row-setting">
+    <label className={`row-setting ${disabled ? "is-disabled" : ""}`}>
       <span className="row-setting-label">{label}</span>
       <button
         type="button"
         role="switch"
         aria-checked={checked}
+        aria-disabled={disabled}
+        disabled={disabled}
         className={`switch ${checked ? "on" : ""}`}
-        onClick={() => onChange(!checked)}
+        onClick={() => {
+          if (!disabled) onChange(!checked);
+        }}
       >
         <span className="switch-knob" />
       </button>

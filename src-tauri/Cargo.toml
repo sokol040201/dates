@@ -1,6 +1,6 @@
 [package]
 name = "dates"
-version = "1.0.0"
+version = "1.1.0"
 description = "DATES — modern birthday and holiday reminder"
 authors = ["you"]
 edition = "2021"
@@ -27,6 +27,21 @@ tauri-plugin-global-shortcut = "2"
 encoding_rs = "0.8.42"
 tauri-plugin-updater = "2.13.1"
 tauri-plugin-process = "2.4.0"
+tauri-plugin-single-instance = "2"
+notify-rust = "4"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_Storage_EnhancedStorage",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 codegen-units = 1

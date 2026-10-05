@@ -6,7 +6,9 @@ import { hideEvent, listHiddenEvents, updateSettings } from "../lib/db";
 import { syncHolidays } from "../lib/holidays";
 import { ensureNotificationPermission } from "../lib/reminders";
 import { ACCENT_THEMES, applyAccentTheme, DEFAULT_ACCENT } from "../lib/themes";
+import { SKIN_OPTIONS, applySkin } from "../lib/skins";
 import { WINDOW_SIZES, applyWindowSize } from "../lib/windowSize";
+import { applySkipTaskbar } from "../lib/windowState";
 import { exportBackup, importBackup } from "../lib/backup";
 import { checkForAppUpdate } from "../lib/updater";
 import { IconClose, IconDownload, IconMinus, IconPlus, IconUpload } from "./Icons";
@@ -45,6 +47,9 @@ export function SettingsPanel({ settings, onClose, onChanged, onGlobalHotkeyChan
     const opacity = Math.min(95, Math.max(55, next.glass_opacity || 88));
     document.documentElement.style.setProperty("--glass-alpha", String(opacity / 100));
     applyAccentTheme(next.accent || DEFAULT_ACCENT, next.theme);
+    applySkin(next.skin || "auto", next.theme, () => {
+      applyAccentTheme(next.accent || DEFAULT_ACCENT, next.theme);
+    });
     if (patch.window_size) await applyWindowSize(next.window_size);
     await onChanged();
     return next;
@@ -72,7 +77,10 @@ export function SettingsPanel({ settings, onClose, onChanged, onGlobalHotkeyChan
   return (
     <div className="overlay">
       <div className="overlay-head">
-        <strong>Настройки</strong>
+        <div className="overlay-head-title">
+          <strong>Настройки</strong>
+          <span className="version-badge">v{version}</span>
+        </div>
         <button type="button" className="win-btn" onClick={onClose} title="Закрыть">
           <IconClose size={15} />
         </button>
@@ -117,9 +125,15 @@ export function SettingsPanel({ settings, onClose, onChanged, onGlobalHotkeyChan
             onChange={(v) => save({ show_yesterday: v ? 1 : 0 })}
           />
           <Switch
+            label="Системные уведомления"
+            checked={!!(local.notifications_enabled ?? 1)}
+            onChange={(v) => save({ notifications_enabled: v ? 1 : 0 })}
+          />
+          <Switch
             label="Звук уведомлений"
             checked={!!local.sound_enabled}
             onChange={(v) => save({ sound_enabled: v ? 1 : 0 })}
+            disabled={!(local.notifications_enabled ?? 1)}
           />
           <Switch
             label="Повтор вечером в день события"
@@ -129,6 +143,19 @@ export function SettingsPanel({ settings, onClose, onChanged, onGlobalHotkeyChan
         </SettingGroup>
 
         <SettingGroup title="Оформление">
+          <div className="select-label">Скин сезона</div>
+          <div className="chip-row" style={{ marginBottom: 12, flexWrap: "wrap" }}>
+            {SKIN_OPTIONS.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                className={`chip ${(local.skin || "auto") === s.id ? "active" : ""}`}
+                onClick={() => save({ skin: s.id })}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
           <div className="select-label">Цвет акцента</div>
           <div className="swatch-row">
             {ACCENT_THEMES.map((t) => {
@@ -220,6 +247,11 @@ export function SettingsPanel({ settings, onClose, onChanged, onGlobalHotkeyChan
               min={55}
               max={95}
               value={local.glass_opacity || 88}
+              style={
+                {
+                  ["--range-pct" as string]: `${(((local.glass_opacity || 88) - 55) / 40) * 100}%`,
+                }
+              }
               onChange={(e) => {
                 const v = Number(e.target.value);
                 setLocal((prev) => ({ ...prev, glass_opacity: v }));
@@ -232,9 +264,9 @@ export function SettingsPanel({ settings, onClose, onChanged, onGlobalHotkeyChan
             />
           </div>
           <Switch
-            label="Светлое стекло"
-            checked={local.theme === "light"}
-            onChange={(v) => save({ theme: v ? "light" : "dark" })}
+            label="Тёмная тема"
+            checked={local.theme === "dark"}
+            onChange={(v) => save({ theme: v ? "dark" : "light" })}
           />
           <Switch
             label="Бегущая строка"
@@ -251,6 +283,14 @@ export function SettingsPanel({ settings, onClose, onChanged, onGlobalHotkeyChan
               } catch {
                 /* browser */
               }
+            }}
+          />
+          <Switch
+            label="Скрыть из панели задач (виджет)"
+            checked={!!local.hide_from_taskbar}
+            onChange={async (v) => {
+              await save({ hide_from_taskbar: v ? 1 : 0 });
+              await applySkipTaskbar(v);
             }}
           />
           <Switch
@@ -388,9 +428,9 @@ export function SettingsPanel({ settings, onClose, onChanged, onGlobalHotkeyChan
 
         <SettingGroup title="Обновления">
           <p className="muted" style={{ marginTop: 0 }}>
-            Версия {version}. Обновления приходят с GitHub Releases.
+            Версия {version}. Автопроверка при запуске и каждые 6 часов.
           </p>
-          <div className="actions" style={{ padding: "4px 0 10px" }}>
+          <div className="actions" style={{ padding: "4px 0 6px" }}>
             <button
               type="button"
               className="btn primary"
@@ -415,7 +455,7 @@ export function SettingsPanel({ settings, onClose, onChanged, onGlobalHotkeyChan
                 }
               }}
             >
-              Проверить обновления
+              Проверить сейчас
             </button>
           </div>
         </SettingGroup>
