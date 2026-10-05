@@ -1,0 +1,36 @@
+[package]
+name = "dates"
+version = "1.0.0"
+description = "DATES — modern birthday and holiday reminder"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "dates_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-sql = { version = "2.5.0", features = ["sqlite"] }
+tauri-plugin-notification = "2.5.1"
+tauri-plugin-autostart = "2.7.0"
+tauri-plugin-dialog = "2.8.1"
+tauri-plugin-fs = "2.6.0"
+tauri-plugin-shell = "2.4.0"
+tauri-plugin-global-shortcut = "2"
+encoding_rs = "0.8.42"
+tauri-plugin-updater = "2.13.1"
+tauri-plugin-process = "2.4.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
